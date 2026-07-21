@@ -1,0 +1,4 @@
+plan_id,plan_name,monthly_premium,annual_deductible,copay_pct,coverage_type,network_tier
+P101,Gold PPO,500,2000,10,PPO,Gold
+P102,Silver HMO,300,1500,20,HMO,Silver
+P103,Bronze HMO,150,1000,30,HMO,Bronze

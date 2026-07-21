@@ -1,0 +1,6 @@
+claim_id,member_id,plan_id,procedure,claim_amount,status,date_filed
+C1001,M1001,P101,X-ray,250,Pending,2023-04-01
+C1002,M1001,P101,Surgery,1200,Approved,2023-03-15
+C1003,M1002,P102,X-ray,150,Denied,2023-04-05
+C1004,M1002,P102,Surgery,900,Approved,2023-03-20
+C1005,M1003,P103,X-ray,50,Pending,2023-04-10
