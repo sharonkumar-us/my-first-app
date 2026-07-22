@@ -1,0 +1,14 @@
+Claims Submission Process
+SYNTHETIC SAMPLE DOCUMENT — Fictional process, no real member data
+Overview
+This document outlines the fictional claims submission process used for training purposes. All names, member IDs, and procedures referenced are synthetic.
+Step 1: Submit the Claim
+Members submit claims through the online portal or by mailing a completed claim form. Each claim must include the member ID, plan ID, date of service, and procedure code.
+Step 2: Initial Review
+Claims are reviewed for completeness within 3 business days. Incomplete claims are returned to the member with a request for additional information.
+Step 3: Adjudication
+The claim is checked against the member's plan coverage rules, including deductible status and network tier. Claims are marked as Approved, Denied, or Pending further review.
+Step 4: Notification
+Members receive an Explanation of Benefits (EOB) summarizing the claim outcome, amount billed, amount covered, and any remaining member responsibility.
+Example (Fictional)
+Member Jane Test (Member ID M1001) submitted a claim for an X-ray procedure billed at $250 under the Gold PPO plan. The claim was marked Pending while deductible status was confirmed.

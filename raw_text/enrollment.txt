@@ -1,0 +1,23 @@
+HEALTH PLAN ENROLLMENT FORM
+
+SYNTHETIC SAMPLE DOCUMENT — Fictional Data Only
+
+Member Name: Jane Test
+Member ID: M1001
+
+Date of Birth: 01/15/1985
+
+Plan Selected: Gold PPO (P101)
+Employer: ABC Fictional Corp
+Enrollment Date: 04/01/2024
+Dependent Coverage: None
+
+Signature: Jane Test
+
+Date Signed: 03/28/2024
+
+Section: Coverage Acknowledgment
+
+| acknowledge that the information provided above is accurate to the
+best of my knowledge and that this is a synthetic training document
+containing no real personal health information.

@@ -1,0 +1,22 @@
+Summary of Benefits and Coverage
+Gold PPO Plan — SYNTHETIC SAMPLE DOCUMENT (Fictional Data Only)
+Plan Overview
+This Summary of Benefits and Coverage (SBC) document describes the Gold PPO plan, a fictional
+health plan created for training purposes. All figures below are synthetic and do not represent any real
+insurance product.
+Key Plan Details
+Item Amount
+Monthly Premium $500
+Annual Deductible $2,000
+Out-of-Pocket Maximum $6,000
+Primary Care Copay 10%
+Specialist Copay 20%
+Network Tier Gold
+Covered Services
+The Gold PPO plan covers preventive care visits at no cost, emergency room visits subject to the
+annual deductible, and prescription drugs under a tiered formulary. Surgical procedures require prior
+authorization for non-emergency cases.
+Member Support
+For questions about this plan, contact Member Services at 1-800-555-0100 (fictional number) or visit
+the member portal. This document is a synthetic training artifact and contains no real member or plan
+data.
