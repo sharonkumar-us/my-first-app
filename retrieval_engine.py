@@ -1,6 +1,12 @@
 import ollama
+import sqlite3
+import re
+
+import chromadb
+from sentence_transformers import SentenceTransformer
 
 CLASSIFIER_MODEL = "qwen2.5-coder:7b"
+
 
 def classify_question(question):
     """Classify a member question as 'structured', 'unstructured', or 'both'."""
@@ -33,19 +39,6 @@ Classification:"""
         return "unstructured"  # safe fallback
 
 
-# --- Quick test ---
-test_questions = [
-    "What's my deductible on the Gold PPO plan?",
-    "Is physical therapy covered under my plan?",
-    "What's the status of my claim C1001?",
-]
-
-for q in test_questions:
-    label = classify_question(q)
-    print(f"'{q}' -> {label}")
-    import sqlite3
-import re
-
 DB_SCHEMA = """
 Table: plans
 Columns: plan_id (TEXT), plan_name (TEXT), monthly_premium (INTEGER), annual_deductible (INTEGER), copay_pct (INTEGER), coverage_type (TEXT), network_tier (TEXT)
@@ -53,6 +46,7 @@ Columns: plan_id (TEXT), plan_name (TEXT), monthly_premium (INTEGER), annual_ded
 Table: claims
 Columns: claim_id (TEXT), member_id (TEXT), plan_id (TEXT), procedure (TEXT), claim_amount (INTEGER), status (TEXT), date_filed (TEXT)
 """
+
 
 def generate_sql(question):
     """Ask the LLM to write a SQL query for the given question, using our known schema."""
@@ -96,17 +90,10 @@ def sql_lookup(question):
         return {"sql": sql, "error": str(e), "rows": []}
 
 
-# --- Quick test ---
-result = sql_lookup("What's my deductible on the Gold PPO plan?")
-print(f"Generated SQL: {result['sql']}")
-print(f"Error: {result['error']}")
-print(f"Rows: {result['rows']}")
-import chromadb
-from sentence_transformers import SentenceTransformer
-
 embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 chroma_client = chromadb.PersistentClient(path="./chroma_data")
 collection = chroma_client.get_collection("coverage_kb")
+
 
 def vector_lookup(question, n_results=5, plan_type_filter=None):
     """Embed the question and query the vector DB for the top-N relevant chunks.
@@ -133,11 +120,6 @@ def vector_lookup(question, n_results=5, plan_type_filter=None):
     return chunks
 
 
-# --- Quick test ---
-chunks = vector_lookup("Is physical therapy covered under my plan?")
-print(f"Retrieved {len(chunks)} chunks:")
-for c in chunks:
-    print(f"\n- [{c['distance']:.4f}] {c['text'][:80]}...")
 def retrieve(question):
     """Route the question to sql_lookup, vector_lookup, or both, then merge into one context block."""
     classification = classify_question(question)
@@ -171,32 +153,34 @@ def retrieve(question):
     }
 
 
-# --- Quick test ---
-result = retrieve("What's my deductible on the Gold PPO plan?")
-print(f"Classification: {result['classification']}")
-print(f"\nMerged context:\n{result['merged_context']}")
-TEST_QUESTIONS = [
-    "What's my copay under the Bronze HMO plan?",
-    "Is maternity care covered on the Bronze plan?",
-    "What's the status of claim C1001?",
-    "Is physical therapy covered under my Silver plan?",
-    "What's the monthly premium for Gold PPO?",
-    "What is the claims submission process?",
-    "How much was billed for claim C1003?",
-    "What information is needed to enroll in a plan?",
-    "Is my X-ray procedure covered and what's my deductible under Silver HMO?",
-    "What's the status of claim C-2031?",
-]
-
-print("\n\n=== TEST HARNESS: 10 questions ===")
-test_results = []
-for i, q in enumerate(TEST_QUESTIONS):
-    print(f"\n{'='*60}\nQ{i+1}: {q}")
-    result = retrieve(q)
+if __name__ == "__main__":
+    # --- Quick test ---
+    result = retrieve("What's my deductible on the Gold PPO plan?")
     print(f"Classification: {result['classification']}")
-    if result["sql_result"]:
-        print(f"Generated SQL: {result['sql_result']['sql']}")
-        print(f"SQL Error: {result['sql_result']['error']}")
-        print(f"SQL Rows: {result['sql_result']['rows']}")
-    print(f"Full context:\n{result['merged_context']}")
-    test_results.append(result)
+    print(f"\nMerged context:\n{result['merged_context']}")
+
+    TEST_QUESTIONS = [
+        "What's my copay under the Bronze HMO plan?",
+        "Is maternity care covered on the Bronze plan?",
+        "What's the status of claim C1001?",
+        "Is physical therapy covered under my Silver plan?",
+        "What's the monthly premium for Gold PPO?",
+        "What is the claims submission process?",
+        "How much was billed for claim C1003?",
+        "What information is needed to enroll in a plan?",
+        "Is my X-ray procedure covered and what's my deductible under Silver HMO?",
+        "What's the status of claim C-2031?",
+    ]
+
+    print("\n\n=== TEST HARNESS: 10 questions ===")
+    test_results = []
+    for i, q in enumerate(TEST_QUESTIONS):
+        print(f"\n{'='*60}\nQ{i+1}: {q}")
+        result = retrieve(q)
+        print(f"Classification: {result['classification']}")
+        if result["sql_result"]:
+            print(f"Generated SQL: {result['sql_result']['sql']}")
+            print(f"SQL Error: {result['sql_result']['error']}")
+            print(f"SQL Rows: {result['sql_result']['rows']}")
+        print(f"Full context:\n{result['merged_context']}")
+        test_results.append(result)
