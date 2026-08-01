@@ -1,5 +1,8 @@
 .venv/
+ft_env/
 __pycache__/
 *.pyc
 .env
-chroma_data/.DS_Store
+.DS_Store
+chroma_data/
+adapters/
