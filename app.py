@@ -13,7 +13,9 @@ Run from the project root, with the FastAPI backend already running:
     streamlit run app.py
 """
 
+import json
 from pathlib import Path
+from typing import Iterator
 from uuid import uuid4
 
 import pandas as pd
@@ -130,6 +132,45 @@ def post_to_backend(message: str) -> str:
     return response.json()["answer"]
 
 
+def stream_from_backend(message: str) -> Iterator[str]:
+    """Yield tokens one at a time as they arrive from /chat/stream.
+
+    Each SSE event from the backend is one of three shapes:
+        {"type": "token", "text": "..."}   -> yield the text
+        {"type": "done", "session_id": ""} -> stream ended cleanly
+        {"type": "error", "detail": "..."} -> raise so the caller can surface it
+
+    We use requests with stream=True so the connection stays open and iter_lines
+    delivers lines as they arrive rather than after the whole response is done.
+    """
+    response = requests.post(
+        f"{BACKEND_URL}/chat/stream",
+        json={
+            "session_id": st.session_state.session_id,
+            "member_id": DEFAULT_MEMBER_ID,
+            "message": message,
+        },
+        timeout=CHAT_TIMEOUT_SECONDS,
+        stream=True,  # do not buffer the whole response
+    )
+    response.raise_for_status()
+
+    for line in response.iter_lines(decode_unicode=True):
+        if not line or not line.startswith("data: "):
+            # SSE blank lines are event separators; ignore. Also skip any
+            # comment or malformed line to be safe.
+            continue
+        payload = json.loads(line[len("data: "):])
+        event_type = payload.get("type")
+
+        if event_type == "token":
+            yield payload.get("text", "")
+        elif event_type == "done":
+            return
+        elif event_type == "error":
+            raise RuntimeError(payload.get("detail", "Unknown stream error"))
+
+
 # ---------------------------------------------------------------------------
 # Render the existing conversation thread
 #
@@ -156,31 +197,59 @@ if user_message := st.chat_input("Type your question..."):
     with st.chat_message("user"):
         st.markdown(user_message)
 
-    # 2. Call the backend. The retrieval + generation loop takes tens of
-    #    seconds, so we show a spinner inside the assistant bubble to make
-    #    the wait feel intentional rather than broken.
+    # 2. Stream the assistant reply into a single placeholder that we update
+    #    on every token. The spinner covers the ~15s pre-first-token gap
+    #    while retrieval + prompt build happens; once tokens start arriving,
+    #    we swap the spinner out for the accumulating text.
     with st.chat_message("assistant"):
-        with st.spinner("Looking it up in your plan records..."):
-            try:
-                assistant_reply = post_to_backend(user_message)
-            except requests.exceptions.Timeout:
-                assistant_reply = (
-                    "The backend took too long to respond. Please try again — "
-                    "if this keeps happening, contact Member Services at 1-800-555-0100."
-                )
-            except requests.exceptions.ConnectionError:
-                assistant_reply = (
-                    "I can't reach the coverage service right now. Please make "
-                    "sure the backend is running, then try again."
-                )
-            except Exception as e:
-                # Catch-all for HTTP 4xx/5xx and anything else. The specific
-                # error text isn't safe to show a member, so we log-and-generic.
-                assistant_reply = (
-                    "Something went wrong on my end. Please try again."
-                )
-                st.error(f"Backend error: {e}", icon="⚠️")
-        st.markdown(assistant_reply)
+        placeholder = st.empty()
+        accumulated = ""
+        try:
+            with st.spinner("Looking it up in your plan records..."):
+                token_iter = stream_from_backend(user_message)
+                # Pull the FIRST token inside the spinner so the spinner
+                # animates through retrieval. As soon as we get one token,
+                # exit the spinner and switch to placeholder updates.
+                first_token = next(token_iter, "")
+                accumulated += first_token
+                placeholder.markdown(accumulated + " ▌")
+
+            # Now stream the rest of the tokens, updating the placeholder
+            # each time. The "▌" cursor indicates streaming is in progress
+            # and is stripped once the stream ends.
+            for token in token_iter:
+                accumulated += token
+                placeholder.markdown(accumulated + " ▌")
+
+            # Final render without the cursor.
+            placeholder.markdown(accumulated)
+            assistant_reply = accumulated
+
+        except requests.exceptions.Timeout:
+            assistant_reply = (
+                "The backend took too long to respond. Please try again — "
+                "if this keeps happening, contact Member Services at 1-800-555-0100."
+            )
+            placeholder.markdown(assistant_reply)
+        except requests.exceptions.ConnectionError:
+            assistant_reply = (
+                "I can't reach the coverage service right now. Please make "
+                "sure the backend is running, then try again."
+            )
+            placeholder.markdown(assistant_reply)
+        except RuntimeError as e:
+            # Backend-emitted stream error — safe to surface a short version.
+            assistant_reply = f"The reply was interrupted: {e}"
+            if accumulated:
+                # Show whatever we got, then the error note.
+                placeholder.markdown(accumulated + f"\n\n_({assistant_reply})_")
+                assistant_reply = accumulated + f"\n\n[{assistant_reply}]"
+            else:
+                placeholder.markdown(assistant_reply)
+        except Exception as e:
+            assistant_reply = "Something went wrong on my end. Please try again."
+            placeholder.markdown(assistant_reply)
+            st.error(f"Backend error: {e}", icon="⚠️")
 
     # 3. Append to history so the reply persists on the next rerun.
     st.session_state.messages.append({"role": "assistant", "content": assistant_reply})
