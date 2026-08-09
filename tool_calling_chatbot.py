@@ -20,6 +20,7 @@ from openai import OpenAI
 from pydantic import BaseModel, ValidationError
 
 from rag_chatbot import PRODUCTION_SYSTEM_PROMPT
+from response_cards import ClaimStatusCard, CoverageSummaryCard
 from retrieval_engine import vector_lookup
 
 load_dotenv()
@@ -268,6 +269,47 @@ def validate_tool_result(tool_name, result):
 
 
 # ---------------------------------------------------------------------------
+# CARD BUILDER — Day 19 Step 4
+# ---------------------------------------------------------------------------
+
+def build_card_from_tool(tool_name, raw_result):
+    """Build a Day 19 response card from a successful tool result, or None.
+
+    Only claim-status and plan-level tools produce cards. Coverage checks
+    produce a CoverageSummaryCard with the covered flag set from the
+    determination field. Returns None on errors or unrecognized tools.
+    """
+    if isinstance(raw_result, dict) and "error" in raw_result:
+        return None
+
+    if tool_name == "get_claim_status":
+        return ClaimStatusCard(
+            claim_id=raw_result["claim_id"],
+            status=raw_result["status"],
+            amount=raw_result.get("claim_amount"),
+            date=None,
+        )
+
+    if tool_name == "get_plan_details":
+        return CoverageSummaryCard(
+            plan_name=raw_result.get("plan_name", ""),
+            deductible=raw_result.get("annual_deductible"),
+            copay=raw_result.get("copay_pct"),
+            covered=None,
+        )
+
+    if tool_name == "check_coverage":
+        return CoverageSummaryCard(
+            plan_name=raw_result.get("plan_name", ""),
+            deductible=None,
+            copay=None,
+            covered=raw_result.get("determination") == "likely_covered",
+        )
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # SYSTEM PROMPT (see tool_call_log.md for the preamble rationale)
 # ---------------------------------------------------------------------------
 
@@ -481,7 +523,7 @@ def answer_question(question, verbose=True):
     if not choice.tool_calls:
         if verbose:
             print("  (no tool call)")
-        return {"question": question, "tool_calls": [], "answer": choice.content}
+        return {"question": question, "tool_calls": [], "answer": choice.content, "cards": []}
 
     messages.append(choice)
 
@@ -532,7 +574,16 @@ def answer_question(question, verbose=True):
     )
     final = second.choices[0].message.content
 
-    return {"question": question, "tool_calls": executed, "answer": final}
+    # Day 19: build cards from accepted (non-rejected) tool results.
+    cards = []
+    for ex in executed:
+        if not ex.get("rejected"):
+            raw = json.loads(ex["validated"])
+            card = build_card_from_tool(ex["name"], raw)
+            if card:
+                cards.append(card.model_dump())
+
+    return {"question": question, "tool_calls": executed, "answer": final, "cards": cards}
 
 
 # ===========================================================================

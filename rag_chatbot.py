@@ -1,6 +1,25 @@
+"""
+Coverage Chatbot — grounded RAG pipeline.
+
+Day 11: retrieve_and_answer() chains classify -> retrieve -> generate.
+Day 12: PRODUCTION_SYSTEM_PROMPT locked as Variant E (hybrid).
+Day 19 Step 1: generate_answer / retrieve_and_answer now return chunk_ids
+               (the list of vector-store chunk IDs that made it into context),
+               so the frontend can render "Policy sources" citations.
+
+Key design point for citations: we DO NOT ask the model to cite. On a 7B model
+that has trouble following the disclaimer rule reliably (see Day 12 scoring),
+asking it to also inline citation markers would produce more hallucinated
+citations than real ones. Instead we track WHICH chunks were passed to it and
+attribute the whole answer to "sources consulted." This can't fabricate a
+citation the retrieval layer never produced.
+"""
+
 import os
+
 from dotenv import load_dotenv
 from openai import OpenAI
+
 from retrieval_engine import retrieve
 
 load_dotenv()
@@ -82,8 +101,18 @@ For questions about your care, please consult your doctor. To confirm benefits o
 an appeal, contact Member Services at 1-800-555-0100."""
 
 
-def generate_answer(question, context):
-    """Generate a grounded answer using ONLY the provided context."""
+def generate_answer(question, context, chunk_ids=None):
+    """Generate a grounded answer using ONLY the provided context.
+
+    Day 19 change: accepts and returns chunk_ids (the retrieval-layer identifiers
+    of the chunks that made it into `context`). We do not modify the prompt to
+    ask the model to cite — the tracking happens at the pipeline level, so a 7B
+    model can't hallucinate citations we never had.
+
+    Returns a dict with two keys:
+        - answer:    the model's natural-language response
+        - chunk_ids: the chunk IDs passed in (for downstream citation rendering)
+    """
     user_prompt = f"""Context: {context}
 
 Question: {question}"""
@@ -95,28 +124,38 @@ Question: {question}"""
             {"role": "user", "content": user_prompt},
         ],
     )
-    return response.choices[0].message.content
+    return {
+        "answer": response.choices[0].message.content,
+        "chunk_ids": chunk_ids or [],
+    }
 
 
 def retrieve_and_answer(question):
-    """Full RAG pipeline: retrieve context, then generate a grounded answer."""
+    """Full RAG pipeline: retrieve context, then generate a grounded answer.
+
+    Day 19 change: threads chunk_ids from retrieval through to the response
+    dict, so /chat callers can hand them to the frontend for citation display.
+    """
     retrieval_result = retrieve(question)
-    answer = generate_answer(question, retrieval_result["merged_context"])
+
+    # Extract chunk IDs from vector_chunks if any were retrieved. Structured-only
+    # queries (pure SQL) will have vector_chunks=None; treat that as no citations.
+    vector_chunks = retrieval_result.get("vector_chunks") or []
+    chunk_ids = [chunk["id"] for chunk in vector_chunks]
+
+    generation = generate_answer(
+        question,
+        retrieval_result["merged_context"],
+        chunk_ids=chunk_ids,
+    )
+
     return {
         "question": question,
         "classification": retrieval_result["classification"],
         "context": retrieval_result["merged_context"],
-        "answer": answer,
+        "answer": generation["answer"],
+        "chunk_ids": generation["chunk_ids"],
     }
-
-
-def connection_smoke_test():
-    """Confirm the Ollama-backed client responds. Call manually when debugging."""
-    response = client.chat.completions.create(
-        model=GENERATION_MODEL,
-        messages=[{"role": "user", "content": "Say hello in exactly 5 words."}],
-    )
-    print(response.choices[0].message.content)
 
 
 if __name__ == "__main__":
@@ -138,7 +177,8 @@ if __name__ == "__main__":
         lines.append(
             f"## Q{i}: {q}\n\n"
             f"**Classification:** {result['classification']}\n\n"
-            f"**Answer:** {result['answer']}\n"
+            f"**Answer:** {result['answer']}\n\n"
+            f"**Chunk IDs consulted:** {result['chunk_ids']}\n"
         )
         print(f"[{i}/10] done")
     with open("rag_qa_results.md", "w") as f:
