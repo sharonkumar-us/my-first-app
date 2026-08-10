@@ -6,6 +6,10 @@ Day 12: PRODUCTION_SYSTEM_PROMPT locked as Variant E (hybrid).
 Day 19 Step 1: generate_answer / retrieve_and_answer now return chunk_ids
                (the list of vector-store chunk IDs that made it into context),
                so the frontend can render "Policy sources" citations.
+Day 20 Step 3: generate_answer / retrieve_and_answer now accept optional
+               conversation history (last N turns) and a plan_hint (the plan
+               the member has been discussing), so multi-turn conversations
+               don't lose track of which plan is under discussion.
 
 Key design point for citations: we DO NOT ask the model to cite. On a 7B model
 that has trouble following the disclaimer rule reliably (see Day 12 scoring),
@@ -50,7 +54,7 @@ BEFORE YOU ANSWER, check silently:
   none named)?
 - Does the retrieved context actually concern that plan? Context about a different plan
   does not answer the question, however relevant it sounds.
-- Which facts in the context directly answer the question? If there are none, say so —
+- Which facts in the context directly answer the question? If there are none, sayso —
   do not assemble a partial answer out of adjacent facts.
 
 Do not show this check to the member. Output only the answer itself.
@@ -77,7 +81,7 @@ HOW TO ANSWER:
 REQUIRED CLOSING DISCLAIMER — append verbatim to every response, with no exceptions:
 
 "This is coverage information based on your plan records, not medical or legal advice.
-For questions about your care, please consult your doctor. To confirm benefits or file
+For questions about your care, please consult your doctor. To confirm benefits orfile
 an appeal, contact Member Services at 1-800-555-0100."
 
 --- EXAMPLE: answer present in context ---
@@ -87,7 +91,7 @@ ANSWER: The Gold PPO plan (P101) has a $500 annual deductible — that's what yo
 out of pocket before the plan starts covering costs. After that, your copay is 10%.
 
 This is coverage information based on your plan records, not medical or legal advice.
-For questions about your care, please consult your doctor. To confirm benefits or file
+For questions about your care, please consult your doctor. To confirm benefits orfile
 an appeal, contact Member Services at 1-800-555-0100.
 
 --- EXAMPLE: answer absent from context ---
@@ -97,32 +101,46 @@ ANSWER: I don't have dental benefits for the Bronze HMO plan in your records —
 see the deductible and copay, but not dental coverage.
 
 This is coverage information based on your plan records, not medical or legal advice.
-For questions about your care, please consult your doctor. To confirm benefits or file
+For questions about your care, please consult your doctor. To confirm benefits orfile
 an appeal, contact Member Services at 1-800-555-0100."""
 
 
-def generate_answer(question, context, chunk_ids=None):
+def generate_answer(question, context, chunk_ids=None, history=None, plan_hint=None):
     """Generate a grounded answer using ONLY the provided context.
 
-    Day 19 change: accepts and returns chunk_ids (the retrieval-layer identifiers
-    of the chunks that made it into `context`). We do not modify the prompt to
-    ask the model to cite — the tracking happens at the pipeline level, so a 7B
-    model can't hallucinate citations we never had.
+    Day 19: accepts and returns chunk_ids (the retrieval-layer identifiers of
+    the chunks that made it into `context`). We do not modify the prompt to
+    ask the model to cite — the tracking happens at the pipeline level, so a
+    7B model can't hallucinate citations we never had.
+
+    Day 20 Step 3: accepts optional `history` (a list of prior
+    {"role": ..., "content": ...} messages, oldest first) inserted between the
+    system prompt and the current question, and an optional `plan_hint` (a
+    plan name like "Gold PPO") noted in the prompt when the member has been
+    discussing that plan earlier in the conversation but the current question
+    doesn't repeat the plan name.
 
     Returns a dict with two keys:
         - answer:    the model's natural-language response
         - chunk_ids: the chunk IDs passed in (for downstream citation rendering)
     """
+    plan_note = (
+        f"(The member has been discussing the {plan_hint} plan earlier in this "
+        f"conversation — assume this plan unless the question names a different one.)\n"
+        if plan_hint else ""
+    )
     user_prompt = f"""Context: {context}
 
-Question: {question}"""
+{plan_note}Question: {question}"""
+
+    messages = [{"role": "system", "content": PRODUCTION_SYSTEM_PROMPT}]
+    if history:
+        messages.extend(history)
+    messages.append({"role": "user", "content": user_prompt})
 
     response = client.chat.completions.create(
         model=GENERATION_MODEL,
-        messages=[
-            {"role": "system", "content": PRODUCTION_SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
+        messages=messages,
     )
     return {
         "answer": response.choices[0].message.content,
@@ -130,13 +148,23 @@ Question: {question}"""
     }
 
 
-def retrieve_and_answer(question):
+def retrieve_and_answer(question, history=None, plan_hint=None):
     """Full RAG pipeline: retrieve context, then generate a grounded answer.
 
-    Day 19 change: threads chunk_ids from retrieval through to the response
-    dict, so /chat callers can hand them to the frontend for citation display.
+    Day 19: threads chunk_ids from retrieval through to the response dict, so
+    /chat callers can hand them to the frontend for citation display.
+
+    Day 20 Step 3: accepts optional `history` and `plan_hint`, passed straight
+    through to generate_answer(). Also nudges the RETRIEVAL question itself
+    with the plan name when the member's current question doesn't name one —
+    so SQL/vector lookups benefit from the same memory, not just the final
+    answer generation.
     """
-    retrieval_result = retrieve(question)
+    retrieval_question = question
+    if plan_hint and plan_hint.lower() not in question.lower():
+        retrieval_question = f"{question} (regarding the {plan_hint} plan)"
+
+    retrieval_result = retrieve(retrieval_question)
 
     # Extract chunk IDs from vector_chunks if any were retrieved. Structured-only
     # queries (pure SQL) will have vector_chunks=None; treat that as no citations.
@@ -147,6 +175,8 @@ def retrieve_and_answer(question):
         question,
         retrieval_result["merged_context"],
         chunk_ids=chunk_ids,
+        history=history,
+        plan_hint=plan_hint,
     )
 
     return {
