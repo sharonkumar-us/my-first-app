@@ -1,32 +1,33 @@
 """
 Day 23 — Model Context Protocol (MCP) server.
+Day 24 — added get_plan_details_tool (genuinely missing capability
+         discovered during Day 24 integration testing: the Day 22/24
+         multi-agent workflow needs premium/deductible/copay lookups, which
+         this server didn't expose until now).
 
-Exposes this project's coverage and claims lookups as MCP tools, so any MCP
-client (Claude Desktop, Cline) can call them directly rather than going
-through this project's own FastAPI backend or Streamlit UI.
+Exposes this project's coverage, claims, and plan-detail lookups as MCP
+tools, so any MCP client (Claude Desktop, Cline, or this project's own
+multi_agent.py) can call them directly.
 
 API note: this project's installed MCP SDK (mcp==2.0.0) uses
 mcp.server.MCPServer, not the mcp.server.fastmcp.FastMCP class most MCP
-tutorials reference (that's the 1.x API). The decorator usage
-(@mcp.tool()) is the same idiom either way, just imported from a different
-path in this version.
+tutorials reference (that's the 1.x API).
 
-Both tools below are thin wrappers around functions already built and
-tested in tool_calling_chatbot.py (Day 13) — check_coverage() already
-calls Day 10's vector_lookup() plus the Day 4 plans table, matching what
-the portal's Step 2 describes, so nothing is reimplemented here.
+All three tools below are thin wrappers around functions already built and
+tested in tool_calling_chatbot.py (Day 13).
 """
 
 from mcp.server import MCPServer
 
-from tool_calling_chatbot import check_coverage, get_claim_status
+from tool_calling_chatbot import check_coverage, get_claim_status, get_plan_details
 
 mcp = MCPServer(
     name="coverage-chatbot",
     description=(
         "Healthcare coverage chatbot tools: check whether a procedure is "
-        "covered under a plan, and look up claim status. Synthetic training "
-        "data only, not a real insurance product."
+        "covered under a plan, look up claim status, and retrieve plan "
+        "terms (premium, deductible, copay, network tier). Synthetic "
+        "training data only, not a real insurance product."
     ),
 )
 
@@ -46,6 +47,14 @@ def get_claim_status_tool(claim_id: str) -> dict:
     claim ID (e.g. 'C1001'). Returns status, procedure, claim amount, and
     the associated plan ID."""
     return get_claim_status(claim_id)
+
+
+@mcp.tool()
+def get_plan_details_tool(plan_id: str) -> dict:
+    """Retrieve the standard terms of a health plan: monthly premium,
+    annual deductible, copay percentage, and network tier. plan_id must be
+    one of P101 (Gold PPO), P102 (Silver HMO), P103 (Bronze HMO)."""
+    return get_plan_details(plan_id)
 
 
 if __name__ == "__main__":

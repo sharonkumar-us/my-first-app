@@ -1,38 +1,52 @@
 """
-Day 22 — Multi-Agent Orchestration.
+Day 22 -> Day 24 — Multi-Agent Orchestration, now with MCP tools, memory, and
+resilience.
 
-Splits the Day 21 single ReAct agent into three roles wired together via a
-LangGraph StateGraph:
-  - Router: classifies the question as coverage, claims, or enrollment
-  - Coverage Specialist: handles coverage AND enrollment questions (both use
-    check_coverage_tool / get_plan_details_tool / retrieval — there's no
-    dedicated "enrollment" tool in this project, and enrollment info lives in
-    the same RAG/vector store the Coverage Specialist already has access to,
-    per raw_text/faq.txt from Day 5)
-  - Claims Specialist: handles claims questions (get_claim_status_tool)
+Day 22: Router + Coverage/Claims specialists wired via LangGraph, calling
+        Day 13's tool functions directly (in-process Python calls).
+Day 24 Step 1: tool calls now go through the Day 23 MCP server
+               (mcp_server.py) as a real client, over stdio.
+Day 24 Step 2: specialists now receive conversation memory (last N turns +
+               inferred plan_id) from Day 20's SQLite-backed memory store,
+               imported directly from coverage-chatbot-api/main.py.
+Day 24 Step 3-4: every MCP tool call is wrapped in asyncio.wait_for with a
+               10s timeout, one retry on failure, then a canned fallback.
 
-This is a genuinely different code path from Day 21's create_react_agent —
-that used a pre-built ReAct loop; this builds the graph by hand (StateGraph,
-add_node, add_conditional_edges) so the Router's classification explicitly
-decides which specialist node runs, rather than one agent deciding among all
-tools itself.
+DESIGN CHANGE FROM THE FIRST DAY 24 DRAFT: the first version of this file
+asked the LLM to decide, in free text, whether it needed a tool and which
+one. Testing against the real 5-question set showed this was unreliable —
+llama3.1:8b answered from its own general insurance knowledge instead of
+calling any tool on every single question, producing entirely fabricated
+numbers (a $20 copay, a $405.92 premium, a $3,000/$6,000 deductible split —
+none of which exist in this project's data). This reproduces the same
+"trusting LLM judgment on tool necessity" failure Day 13's
+check_argument_provenance() guard exists to prevent.
 
-Model note: llama3.1:8b via ChatOpenAI pointed at local Ollama, same as
-Day 21 — the only local model that reliably emits structured tool_calls.
+FIX: tool selection is now fully deterministic, matching the pattern already
+used elsewhere in this project (Day 19's _try_build_cards, Day 20's
+_infer_plan_id) — regex/keyword matching decides whether a tool is needed
+and with what arguments. The LLM is used ONLY to phrase the final sentence
+from real tool output; it is never asked whether to call a tool at all.
 """
 
+import asyncio
 import os
+import re
+import sys
+from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import Literal, TypedDict
 
 from dotenv import load_dotenv
-from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
-from langgraph.prebuilt import create_react_agent
+from mcp import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from tool_calling_chatbot import check_coverage, get_claim_status, get_plan_details
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
-load_dotenv()
+sys.path.insert(0, str(Path(__file__).resolve().parent / "coverage-chatbot-api"))
+from main import _load_history, _infer_plan_id  # noqa: E402
 
 llm = ChatOpenAI(
     model="llama3.1:8b",
@@ -40,67 +54,174 @@ llm = ChatOpenAI(
     api_key=os.environ["OLLAMA_API_KEY"],
 )
 
-# ---------------------------------------------------------------------------
-# Tools (same wrappers as Day 21's langchain_agent.py, duplicated here rather
-# than imported so this file's specialists are self-contained and Day 21's
-# file is untouched)
-# ---------------------------------------------------------------------------
-
-@tool
-def check_coverage_tool(plan_id: str, procedure: str) -> dict:
-    """Check whether a specific medical procedure or service is covered under
-    a given health plan. plan_id must be one of P101 (Gold PPO), P102 (Silver
-    HMO), P103 (Bronze HMO)."""
-    return check_coverage(plan_id, procedure)
-
-
-@tool
-def get_claim_status_tool(claim_id: str) -> dict:
-    """Look up the current processing status of a submitted claim by its
-    claim ID (e.g. 'C1001')."""
-    return get_claim_status(claim_id)
-
-
-@tool
-def get_plan_details_tool(plan_id: str) -> dict:
-    """Retrieve the standard terms of a health plan: monthly premium, annual
-    deductible, copay percentage, and network tier. plan_id must be one of
-    P101 (Gold PPO), P102 (Silver HMO), P103 (Bronze HMO)."""
-    return get_plan_details(plan_id)
-
-
-# ---------------------------------------------------------------------------
-# Specialist agents — each a small ReAct agent scoped to its own tool subset
-# ---------------------------------------------------------------------------
-
-COVERAGE_SPECIALIST_PROMPT = """You are the Coverage Specialist for a
-healthcare coverage assistant. You handle questions about plan coverage,
-plan terms (premium, deductible, copay, network tier), and enrollment
-requirements. Use your tools to look up real data — do not guess. If the
-question is about a specific claim's status, say that's outside your scope
-(a Claims Specialist handles that)."""
-
-coverage_specialist = create_react_agent(
-    llm,
-    [check_coverage_tool, get_plan_details_tool],
-    prompt=COVERAGE_SPECIALIST_PROMPT,
+TIMEOUT_SECONDS = 10
+MAX_RETRIES = 1
+FALLBACK_MESSAGE = (
+    "I'm having trouble accessing that right now, please contact member support."
 )
 
-CLAIMS_SPECIALIST_PROMPT = """You are the Claims Specialist for a healthcare
-coverage assistant. You handle questions about claim status, claim amounts,
-and claim processing. Use your tools to look up real data — do not guess. If
-the question is about plan coverage or plan terms rather than a specific
-claim, say that's outside your scope (a Coverage Specialist handles that)."""
-
-claims_specialist = create_react_agent(
-    llm,
-    [get_claim_status_tool],
-    prompt=CLAIMS_SPECIALIST_PROMPT,
+MCP_SERVER_PARAMS = StdioServerParameters(
+    command=str(Path(__file__).resolve().parent / ".venv" / "bin" / "python"),
+    args=[str(Path(__file__).resolve().parent / "mcp_server.py")],
 )
 
 
 # ---------------------------------------------------------------------------
-# Router — classifies the question, no tools of its own
+# Resilient MCP client wrapper — Day 24 Steps 3-4
+# ---------------------------------------------------------------------------
+
+class MCPToolClient:
+    """Owns one stdio connection to mcp_server.py for the lifetime of a run."""
+
+    def __init__(self):
+        self._stack = AsyncExitStack()
+        self.session: ClientSession | None = None
+
+    async def __aenter__(self):
+        read, write = await self._stack.enter_async_context(stdio_client(MCP_SERVER_PARAMS))
+        self.session = await self._stack.enter_async_context(ClientSession(read, write))
+        await self.session.initialize()
+        return self
+
+    async def __aexit__(self, *exc):
+        await self._stack.aclose()
+
+    async def _call_once(self, tool_name: str, arguments: dict) -> str:
+        result = await asyncio.wait_for(
+            self.session.call_tool(tool_name, arguments),
+            timeout=TIMEOUT_SECONDS,
+        )
+        return result.content[0].text if result.content else "{}"
+
+    async def call_tool_resilient(self, tool_name: str, arguments: dict) -> tuple[str, bool]:
+        """Call an MCP tool with a 10s timeout and one retry on failure.
+
+        Returns (result_text, used_fallback).
+        """
+        last_error = None
+        for attempt in range(MAX_RETRIES + 1):
+            try:
+                text = await self._call_once(tool_name, arguments)
+                return text, False
+            except Exception as e:
+                last_error = e
+                if attempt < MAX_RETRIES:
+                    continue
+        print(f"  [MCP call failed after {MAX_RETRIES + 1} attempt(s)]: {last_error}")
+        return FALLBACK_MESSAGE, True
+
+
+# ---------------------------------------------------------------------------
+# Deterministic tool selection — Day 24 fix
+#
+# No LLM judgment on WHETHER to call a tool. Regex/keyword matching only,
+# same pattern as _try_build_cards (Day 19) and _infer_plan_id (Day 20).
+# ---------------------------------------------------------------------------
+
+PLAN_TERM_KEYWORDS = ("premium", "deductible", "copay", "network tier", "network")
+CLAIM_ID_PATTERN = re.compile(r"\b(C\d{4})\b", re.IGNORECASE)
+
+
+async def answer_claims_question(
+    question: str, mcp_client: MCPToolClient, trace: list[str]
+) -> str:
+    """Claims Specialist: deterministic — a claim ID must be present in the
+    question itself (memory does not carry claim IDs forward, only plan
+    context, matching Day 20's actual scope)."""
+    match = CLAIM_ID_PATTERN.search(question)
+    if not match:
+        answer = (
+            "I don't see a claim ID in your question. Could you provide the "
+            "claim ID (e.g. 'C1001') so I can look up its status?"
+        )
+        trace.append(f"  [No claim ID found — no tool called] Final Answer: {answer}")
+        return answer
+
+    claim_id = match.group(1).upper()
+    trace.append(f"  Action: get_claim_status_tool({{'claim_id': '{claim_id}'}})")
+    result_text, used_fallback = await mcp_client.call_tool_resilient(
+        "get_claim_status_tool", {"claim_id": claim_id}
+    )
+    trace.append(f"  Observation: {result_text}" + (" [FALLBACK USED]" if used_fallback else ""))
+
+    if used_fallback:
+        return result_text
+
+    final_prompt = f"""You are the Claims Specialist for a healthcare coverage
+assistant. Give a concise final answer to the member's question using ONLY
+this tool result — do not add information not present in it.
+
+Member question: {question}
+
+Tool result: {result_text}"""
+    answer = llm.invoke([{"role": "user", "content": final_prompt}]).content.strip()
+    trace.append(f"  Final Answer: {answer}")
+    return answer
+
+
+async def answer_coverage_question(
+    question: str,
+    plan_id: str | None,
+    plan_name: str | None,
+    mcp_client: MCPToolClient,
+    trace: list[str],
+) -> str:
+    """Coverage Specialist: deterministic — plan_id comes from the current
+    question or conversation memory (already inferred by the caller). Tool
+    choice is keyword-based: plan-terms keywords -> get_plan_details_tool,
+    otherwise treat it as a coverage-determination question ->
+    check_coverage_tool. No plan at all -> honest refusal, no tool call."""
+    if not plan_id:
+        answer = (
+            "I don't see which plan you're asking about. Could you let me "
+            "know the plan name (Gold PPO, Silver HMO, or Bronze HMO)?"
+        )
+        trace.append(f"  [No plan established — no tool called] Final Answer: {answer}")
+        return answer
+
+    q_lower = question.lower()
+    is_plan_terms_question = any(kw in q_lower for kw in PLAN_TERM_KEYWORDS)
+
+    if is_plan_terms_question:
+        trace.append(f"  Action: get_plan_details_tool({{'plan_id': '{plan_id}'}})")
+        result_text, used_fallback = await mcp_client.call_tool_resilient(
+            "get_plan_details_tool", {"plan_id": plan_id}
+        )
+    else:
+        # Extract a rough "procedure" — everything after common lead-in
+        # phrases, falling back to the question itself. Good enough for
+        # this project's tool, which does its own retrieval matching.
+        procedure = re.sub(
+            r"^(is|does|do you|would|will)\s+", "", question, flags=re.IGNORECASE
+        ).strip("?. ")
+        trace.append(
+            f"  Action: check_coverage_tool({{'plan_id': '{plan_id}', 'procedure': '{procedure}'}})"
+        )
+        result_text, used_fallback = await mcp_client.call_tool_resilient(
+            "check_coverage_tool", {"plan_id": plan_id, "procedure": procedure}
+        )
+
+    trace.append(f"  Observation: {result_text}" + (" [FALLBACK USED]" if used_fallback else ""))
+
+    if used_fallback:
+        return result_text
+
+    final_prompt = f"""You are the Coverage Specialist for a healthcare
+coverage assistant. Give a concise final answer to the member's question
+using ONLY this tool result — do not add information not present in it. If
+the tool result shows a coverage determination of "unknown", say clearly
+that you cannot confirm coverage either way — never say "likely covered."
+
+Member question: {question}
+
+Tool result: {result_text}"""
+    answer = llm.invoke([{"role": "user", "content": final_prompt}]).content.strip()
+    trace.append(f"  Final Answer: {answer}")
+    return answer
+
+
+# ---------------------------------------------------------------------------
+# Router — unchanged from Day 22, no tools, no MCP involvement
 # ---------------------------------------------------------------------------
 
 ROUTER_PROMPT = """You are a routing classifier for a healthcare coverage
@@ -113,8 +234,6 @@ Respond with ONLY one word: coverage or claims. Do not explain your answer."""
 
 
 def classify_question(question: str) -> Literal["coverage", "claims"]:
-    """Call the router LLM directly (no tools, no agent loop needed — this
-    is a single classification call, not a multi-step reasoning task)."""
     response = llm.invoke([
         {"role": "system", "content": ROUTER_PROMPT},
         {"role": "user", "content": question},
@@ -122,7 +241,7 @@ def classify_question(question: str) -> Literal["coverage", "claims"]:
     label = response.content.strip().lower()
     if "claim" in label:
         return "claims"
-    return "coverage"  # default / covers "coverage" and "enrollment" alike
+    return "coverage"
 
 
 # ---------------------------------------------------------------------------
@@ -130,92 +249,74 @@ def classify_question(question: str) -> Literal["coverage", "claims"]:
 # ---------------------------------------------------------------------------
 
 class GraphState(TypedDict):
+    session_id: str
     question: str
     route: str
     answer: str
     trace: list[str]
 
 
-def router_node(state: GraphState) -> GraphState:
-    route = classify_question(state["question"])
-    trace = state.get("trace", [])
-    trace.append(f"[Router] classified as: {route}")
-    return {**state, "route": route, "trace": trace}
+def make_graph(mcp_client: MCPToolClient):
+    async def router_node(state: GraphState) -> GraphState:
+        route = classify_question(state["question"])
+        trace = state.get("trace", [])
+        trace.append(f"[Router] classified as: {route}")
+        return {**state, "route": route, "trace": trace}
 
+    async def coverage_node(state: GraphState) -> GraphState:
+        trace = state.get("trace", [])
+        trace.append("[Coverage Specialist] invoked")
 
-def coverage_node(state: GraphState) -> GraphState:
-    trace = state.get("trace", [])
-    trace.append("[Coverage Specialist] invoked")
-    result = coverage_specialist.invoke(
-        {"messages": [{"role": "user", "content": state["question"]}]}
+        raw_history, _ph, _tb, _ta = _load_history(state["session_id"])
+        plan_id, plan_name = _infer_plan_id(state["question"], raw_history)
+        trace.append(f"  [Memory] inferred plan: {plan_name or 'none'}")
+
+        answer = await answer_coverage_question(
+            state["question"], plan_id, plan_name, mcp_client, trace
+        )
+        return {**state, "answer": answer, "trace": trace}
+
+    async def claims_node(state: GraphState) -> GraphState:
+        trace = state.get("trace", [])
+        trace.append("[Claims Specialist] invoked")
+
+        raw_history, _ph, _tb, _ta = _load_history(state["session_id"])
+        _plan_id, plan_name = _infer_plan_id(state["question"], raw_history)
+        trace.append(f"  [Memory] inferred plan: {plan_name or 'none'}")
+
+        answer = await answer_claims_question(state["question"], mcp_client, trace)
+        return {**state, "answer": answer, "trace": trace}
+
+    def route_decision(state: GraphState) -> str:
+        return state["route"]
+
+    builder = StateGraph(GraphState)
+    builder.add_node("router", router_node)
+    builder.add_node("coverage", coverage_node)
+    builder.add_node("claims", claims_node)
+    builder.add_edge(START, "router")
+    builder.add_conditional_edges(
+        "router", route_decision, {"coverage": "coverage", "claims": "claims"}
     )
-    final_message = result["messages"][-1]
-    for msg in result["messages"]:
-        msg_type = type(msg).__name__
-        if msg_type == "AIMessage":
-            tool_calls = getattr(msg, "tool_calls", None) or []
-            for call in tool_calls:
-                trace.append(f"  Action: {call['name']}({call['args']})")
-        elif msg_type == "ToolMessage":
-            trace.append(f"  Observation: {msg.content}")
-    trace.append(f"  Final Answer: {final_message.content}")
-    return {**state, "answer": final_message.content, "trace": trace}
+    builder.add_edge("coverage", END)
+    builder.add_edge("claims", END)
+    return builder.compile()
 
 
-def claims_node(state: GraphState) -> GraphState:
-    trace = state.get("trace", [])
-    trace.append("[Claims Specialist] invoked")
-    result = claims_specialist.invoke(
-        {"messages": [{"role": "user", "content": state["question"]}]}
-    )
-    final_message = result["messages"][-1]
-    for msg in result["messages"]:
-        msg_type = type(msg).__name__
-        if msg_type == "AIMessage":
-            tool_calls = getattr(msg, "tool_calls", None) or []
-            for call in tool_calls:
-                trace.append(f"  Action: {call['name']}({call['args']})")
-        elif msg_type == "ToolMessage":
-            trace.append(f"  Observation: {msg.content}")
-    trace.append(f"  Final Answer: {final_message.content}")
-    return {**state, "answer": final_message.content, "trace": trace}
-
-
-def route_decision(state: GraphState) -> str:
-    """Conditional edge function: reads the route the router_node set and
-    tells the graph which specialist node to go to next."""
-    return state["route"]
-
-
-# ---------------------------------------------------------------------------
-# Build the graph
-# ---------------------------------------------------------------------------
-
-builder = StateGraph(GraphState)
-builder.add_node("router", router_node)
-builder.add_node("coverage", coverage_node)
-builder.add_node("claims", claims_node)
-
-builder.add_edge(START, "router")
-builder.add_conditional_edges(
-    "router",
-    route_decision,
-    {"coverage": "coverage", "claims": "claims"},
-)
-builder.add_edge("coverage", END)
-builder.add_edge("claims", END)
-
-graph = builder.compile()
-
-
-def run_question(question: str) -> dict:
-    """Run one question through the full router -> specialist graph."""
-    result = graph.invoke({"question": question, "route": "", "answer": "", "trace": []})
+async def run_question(session_id: str, question: str, mcp_client: MCPToolClient) -> dict:
+    graph = make_graph(mcp_client)
+    result = await graph.ainvoke({
+        "session_id": session_id,
+        "question": question,
+        "route": "",
+        "answer": "",
+        "trace": [],
+    })
     return result
 
 
 # ---------------------------------------------------------------------------
-# Same 5 test questions as Day 21, for a direct comparison
+# Same 5 test questions as Day 21/22, for a direct comparison
 # ---------------------------------------------------------------------------
 
 TEST_QUESTIONS = [
@@ -227,22 +328,25 @@ TEST_QUESTIONS = [
 ]
 
 
-def run_test():
+async def run_test():
+    import uuid
+    session_id = str(uuid.uuid4())
     results = []
-    for i, question in enumerate(TEST_QUESTIONS, start=1):
-        print(f"{'='*70}\n[{i}/5] {question}")
-        result = run_question(question)
-        for line in result["trace"]:
-            print(line)
-        print()
-        results.append({
-            "question": question,
-            "route": result["route"],
-            "answer": result["answer"],
-            "trace": result["trace"],
-        })
+    async with MCPToolClient() as mcp_client:
+        for i, question in enumerate(TEST_QUESTIONS, start=1):
+            print(f"{'='*70}\n[{i}/5] {question}")
+            result = await run_question(session_id, question, mcp_client)
+            for line in result["trace"]:
+                print(line)
+            print()
+            results.append({
+                "question": question,
+                "route": result["route"],
+                "answer": result["answer"],
+                "trace": result["trace"],
+            })
     return results
 
 
 if __name__ == "__main__":
-    run_test()
+    asyncio.run(run_test())
