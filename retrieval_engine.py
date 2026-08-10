@@ -2,6 +2,7 @@ import ollama
 import sqlite3
 import re
 import chromadb
+from pathlib import Path
 from sentence_transformers import SentenceTransformer
 
 CLASSIFIER_MODEL = "qwen2.5-coder:7b"
@@ -87,7 +88,7 @@ def sql_lookup(question):
     if not sql.strip().upper().startswith("SELECT"):
         return {"sql": sql, "error": "Refused: generated query was not a SELECT statement", "rows": []}
     try:
-        conn = sqlite3.connect("coverage.db")
+        conn = sqlite3.connect(str(Path(__file__).resolve().parent / "coverage.db"))
         cur = conn.cursor()
         cur.execute(sql)
         rows = cur.fetchall()
@@ -99,7 +100,8 @@ def sql_lookup(question):
 
 
 embed_model = SentenceTransformer("all-MiniLM-L6-v2")
-chroma_client = chromadb.PersistentClient(path="./chroma_data")
+_CHROMA_PATH = Path(__file__).resolve().parent / "chroma_data"
+chroma_client = chromadb.PersistentClient(path=str(_CHROMA_PATH))
 collection = chroma_client.get_collection("coverage_kb")
 
 

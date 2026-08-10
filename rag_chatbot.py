@@ -20,13 +20,14 @@ citation the retrieval layer never produced.
 """
 
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
 from retrieval_engine import retrieve
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 client = OpenAI(
     base_url=os.environ["OLLAMA_BASE_URL"],

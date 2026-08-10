@@ -13,6 +13,7 @@ support but emits calls as plain text; see tool_call_log.md.
 import json
 import os
 import sqlite3
+from pathlib import Path
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -33,7 +34,7 @@ client = OpenAI(
 # llama3.1:8b emits structured tool_calls reliably; the coder model does not.
 GENERATION_MODEL = "llama3.1:8b"
 
-DB_PATH = "coverage.db"
+DB_PATH = str(Path(__file__).resolve().parent / "coverage.db")
 PLAN_IDS = ["P101", "P102", "P103"]
 
 # ---------------------------------------------------------------------------
