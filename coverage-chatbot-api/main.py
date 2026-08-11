@@ -51,6 +51,7 @@ from pydantic import BaseModel, Field
 from rag_chatbot import PRODUCTION_SYSTEM_PROMPT, retrieve_and_answer
 from retrieval_engine import retrieve
 from tool_calling_chatbot import get_claim_status, get_plan_details, build_card_from_tool
+from redact_pii import redact_pii
 
 load_dotenv()
 
@@ -379,7 +380,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         elapsed_ms = (time.perf_counter() - start) * 1000
         log.exception(
             "chat orchestration failed after %.0fms — session=%s member=%s: %s",
-            elapsed_ms, session_id, req.member_id, e,
+            elapsed_ms, session_id, redact_pii(req.member_id), e,
         )
         raise HTTPException(
             status_code=500,
@@ -388,7 +389,7 @@ def chat(req: ChatRequest) -> ChatResponse:
     elapsed_ms = (time.perf_counter() - start) * 1000
     log.info(
         "chat ok session=%s member=%s elapsed_ms=%.0f chunks=%d cards=%d",
-        session_id, req.member_id, elapsed_ms, len(chunk_ids), len(cards),
+        session_id, redact_pii(req.member_id), elapsed_ms, len(chunk_ids), len(cards),
     )
 
     # Save AFTER orchestrate() so history loaded inside it only ever sees
@@ -503,7 +504,7 @@ def _generate_stream(
         elapsed_ms = (time.perf_counter() - start) * 1000
         log.info(
             "chat/stream ok session=%s member=%s elapsed_ms=%.0f tokens=%d",
-            session_id, member_id, elapsed_ms, len(accumulated),
+            session_id, redact_pii(member_id), elapsed_ms, len(accumulated),
         )
         yield _sse({"type": "done", "session_id": session_id})
 
@@ -511,7 +512,7 @@ def _generate_stream(
         elapsed_ms = (time.perf_counter() - start) * 1000
         log.exception(
             "chat/stream failed after %.0fms — session=%s member=%s: %s",
-            elapsed_ms, session_id, member_id, e,
+            elapsed_ms, session_id, redact_pii(member_id), e,
         )
         if accumulated:
             partial = "".join(accumulated) + "\n\n[stream interrupted]"
