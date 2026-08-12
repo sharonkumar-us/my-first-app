@@ -52,6 +52,7 @@ from rag_chatbot import PRODUCTION_SYSTEM_PROMPT, retrieve_and_answer
 from retrieval_engine import retrieve
 from tool_calling_chatbot import get_claim_status, get_plan_details, build_card_from_tool
 from redact_pii import redact_pii
+from token_utils import count_tokens
 
 load_dotenv()
 
@@ -86,7 +87,9 @@ app.add_middleware(
 # backend starts, with no separate setup script to remember or forget.
 # ---------------------------------------------------------------------------
 
-DB_PATH = "coverage.db"
+from pathlib import Path
+
+DB_PATH = str(Path(__file__).resolve().parent.parent / "coverage.db")
 TOKEN_BUDGET = 2000  # summarize oldest half once history exceeds this
 TOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
 
@@ -116,6 +119,61 @@ def _init_conversations_table() -> None:
 
 
 _init_conversations_table()
+
+
+def _init_token_usage_table() -> None:
+    """Create the token_usage table if it doesn't already exist.
+
+    Day 26 Step 2: one row per /chat request, logging token counts and an
+    ILLUSTRATIVE estimated cost. This project's LLM calls run through local
+    Ollama (see OLLAMA_BASE_URL) and cost $0 in reality -- there is no real
+    "provider rate" to log. estimated_cost here uses OpenAI's published
+    gpt-4o-mini pricing ($0.15/1M input tokens, $0.60/1M output tokens, late
+    2025 rates) purely to demonstrate the cost-logging mechanism a
+    cloud-hosted deployment would need.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS token_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL,
+            output_tokens INTEGER NOT NULL,
+            estimated_cost REAL NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+_init_token_usage_table()
+
+# Illustrative only -- see _init_token_usage_table() docstring. Actual
+# inference cost for this project is $0 (local Ollama).
+ILLUSTRATIVE_INPUT_RATE_PER_TOKEN = 0.15 / 1_000_000
+ILLUSTRATIVE_OUTPUT_RATE_PER_TOKEN = 0.60 / 1_000_000
+
+
+def _log_token_usage(session_id: str, input_tokens: int, output_tokens: int) -> float:
+    """Log one request's token usage and return the illustrative estimated
+    cost (also stored in the row) so callers can log it alongside other
+    per-request metrics without a second DB read."""
+    estimated_cost = (
+        input_tokens * ILLUSTRATIVE_INPUT_RATE_PER_TOKEN
+        + output_tokens * ILLUSTRATIVE_OUTPUT_RATE_PER_TOKEN
+    )
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO token_usage (session_id, timestamp, input_tokens, output_tokens, estimated_cost) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (session_id, _now(), input_tokens, output_tokens, estimated_cost),
+    )
+    conn.commit()
+    conn.close()
+    return estimated_cost
 
 
 def _save_turn(session_id: str, role: str, content: str, timestamp: str) -> None:
@@ -273,6 +331,101 @@ class ChatTurn(BaseModel):
 
 SESSIONS: dict[str, list[ChatTurn]] = {}
 
+# ---------------------------------------------------------------------------
+# Day 26 Step 3 -- rate limiting per member
+#
+# Manual dict-based counter rather than the slowapi library: this project
+# consistently prefers hand-rolled deterministic logic over adding external
+# dependencies for something this simple (see Day 19's _try_build_cards,
+# Day 20's _infer_plan_id) -- a sliding-window counter is a few lines and
+# keeps the dependency surface smaller.
+# ---------------------------------------------------------------------------
+
+RATE_LIMIT_PER_MINUTE = 10
+RATE_LIMIT_WINDOW_SECONDS = 60
+
+# member_id -> list of request timestamps (epoch seconds) within the
+# current window. Pruned lazily on each check rather than with a
+# background task, since this project's traffic volume doesn't warrant one.
+_rate_limit_state: dict[str, list[float]] = {}
+
+
+def check_rate_limit(member_id: str) -> bool:
+    """Return True if member_id is under the rate limit and the request
+    should proceed (and is recorded); False if the limit is exceeded (and
+    nothing is recorded, so a rejected request doesn't itself count against
+    the member).
+    """
+    now = time.time()
+    timestamps = _rate_limit_state.setdefault(member_id, [])
+
+    # Prune timestamps outside the current sliding window.
+    cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+    timestamps[:] = [t for t in timestamps if t > cutoff]
+
+    if len(timestamps) >= RATE_LIMIT_PER_MINUTE:
+        return False
+
+    timestamps.append(now)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Day 26 Step 4 -- exact-match cache for general (non-member-specific)
+# questions
+#
+# Member-specific questions must NEVER be cached -- serving one member's
+# claim status to a different member asking a similarly-phrased question
+# would be a real data leak, not just a correctness bug. This project
+# already has a claim-ID pattern (see _try_build_cards above) used to
+# detect claim questions; reused here rather than duplicated, so both
+# checks stay in sync if the ID format ever changes.
+# ---------------------------------------------------------------------------
+
+_CLAIM_ID_IN_MESSAGE = re.compile(r"\b(C\d{4})\b", re.IGNORECASE)
+_MEMBER_ID_IN_MESSAGE = re.compile(r"\bM\d{4}\b", re.IGNORECASE)
+
+_general_question_cache: dict[str, str] = {}
+
+
+def _normalize_question(message: str) -> str:
+    """Lowercase and collapse whitespace, so trivial formatting differences
+    ("What'"'"'s the premium?" vs "what's the premium?  ") still hit the same
+    cache entry. Deliberately simple exact-match normalization, not fuzzy
+    matching -- the portal specifically asks for exact-match caching."""
+    return " ".join(message.lower().split())
+
+
+def is_cacheable(message: str) -> bool:
+    """A question is cacheable ONLY if it contains no claim ID and no
+    member ID -- i.e. it cannot be about a specific person'"'"'s specific data.
+    A plan-terms question ("what'"'"'s the deductible on Gold PPO?") is
+    cacheable since the answer is the same for anyone asking. A claim
+    question is never cacheable, even if phrased generically, since the
+    cache key would be shared across members who happen to ask the same
+    way about DIFFERENT claims."""
+    if _CLAIM_ID_IN_MESSAGE.search(message):
+        return False
+    if _MEMBER_ID_IN_MESSAGE.search(message):
+        return False
+    return True
+
+
+def get_cached_answer(message: str) -> str | None:
+    """Return the cached answer for this exact (normalized) question, or
+    None on a cache miss. Does not check is_cacheable() itself -- callers
+    must check before writing to the cache; a read against a
+    never-written key is always a safe miss regardless."""
+    return _general_question_cache.get(_normalize_question(message))
+
+
+def set_cached_answer(message: str, answer: str) -> None:
+    """Store an answer in the cache. Callers MUST check is_cacheable(message)
+    before calling this -- this function does not re-check, to keep the
+    caching decision made in exactly one place (the /chat endpoint) rather
+    than duplicated here."""
+    _general_question_cache[_normalize_question(message)] = answer
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -353,10 +506,20 @@ def orchestrate(session_id: str, member_id: str, message: str) -> dict:
 
     result = retrieve_and_answer(message, history=prompt_history, plan_hint=plan_name)
     cards = _try_build_cards(message, plan_id=plan_id)
+
+    # Day 26 Step 1-2: count tokens on the actual prompt sent to the LLM
+    # (retrieved context + the question) and the completion received, so
+    # the logged input/output counts reflect what was really sent, not
+    # just the member's raw message.
+    input_tokens = count_tokens(result.get("context", "")) + count_tokens(message)
+    output_tokens = count_tokens(result["answer"])
+
     return {
         "answer": result["answer"],
         "chunk_ids": result.get("chunk_ids", []),
         "cards": cards,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
     }
 
 
@@ -367,8 +530,40 @@ def health() -> dict[str, str]:
 
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
+    if not check_rate_limit(req.member_id):
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Rate limit exceeded: max {RATE_LIMIT_PER_MINUTE} requests "
+                f"per {RATE_LIMIT_WINDOW_SECONDS}s per member. Please try again shortly."
+            ),
+        )
+
     session_id = req.session_id or str(uuid4())
     turns = SESSIONS.setdefault(session_id, [])
+
+    # Day 26 Step 4: exact-match cache check, before any retrieval/LLM work.
+    # Cache hits skip orchestrate() entirely -- no tokens spent, no cost,
+    # near-instant response. Only questions confirmed cacheable (no claim
+    # or member ID present) are ever looked up here.
+    cacheable = is_cacheable(req.message)
+    if cacheable:
+        cached = get_cached_answer(req.message)
+        if cached is not None:
+            log.info("chat cache HIT session=%s", session_id)
+            user_timestamp = _now()
+            turns.append(ChatTurn(role="user", content=req.message, timestamp=user_timestamp))
+            _save_turn(session_id, "user", req.message, user_timestamp)
+            assistant_timestamp = _now()
+            turns.append(ChatTurn(role="assistant", content=cached, timestamp=assistant_timestamp))
+            _save_turn(session_id, "assistant", cached, assistant_timestamp)
+            return ChatResponse(
+                session_id=session_id,
+                member_id=req.member_id,
+                answer=cached,
+                chunk_ids=[],
+                cards=[],
+            )
 
     start = time.perf_counter()
     try:
@@ -376,6 +571,8 @@ def chat(req: ChatRequest) -> ChatResponse:
         answer = result["answer"]
         chunk_ids = result["chunk_ids"]
         cards = result.get("cards", [])
+        input_tokens = result.get("input_tokens", 0)
+        output_tokens = result.get("output_tokens", 0)
     except Exception as e:
         elapsed_ms = (time.perf_counter() - start) * 1000
         log.exception(
@@ -387,9 +584,12 @@ def chat(req: ChatRequest) -> ChatResponse:
             detail="Internal error generating reply. Please try again.",
         ) from e
     elapsed_ms = (time.perf_counter() - start) * 1000
+    estimated_cost = _log_token_usage(session_id, input_tokens, output_tokens)
     log.info(
-        "chat ok session=%s member=%s elapsed_ms=%.0f chunks=%d cards=%d",
+        "chat ok session=%s member=%s elapsed_ms=%.0f chunks=%d cards=%d "
+        "input_tokens=%d output_tokens=%d estimated_cost=$%.6f",
         session_id, redact_pii(req.member_id), elapsed_ms, len(chunk_ids), len(cards),
+        input_tokens, output_tokens, estimated_cost,
     )
 
     # Save AFTER orchestrate() so history loaded inside it only ever sees
@@ -401,6 +601,9 @@ def chat(req: ChatRequest) -> ChatResponse:
     assistant_timestamp = _now()
     turns.append(ChatTurn(role="assistant", content=answer, timestamp=assistant_timestamp))
     _save_turn(session_id, "assistant", answer, assistant_timestamp)
+    if cacheable:
+        set_cached_answer(req.message, answer)
+
 
     return ChatResponse(
         session_id=session_id,
