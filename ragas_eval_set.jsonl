@@ -1,0 +1,15 @@
+{"question": "What is the annual deductible for the Gold PPO plan?", "ground_truth": "The annual deductible for the Gold PPO plan is $500.", "answer": "", "contexts": []}
+{"question": "What is the annual deductible for the Silver HMO plan?", "ground_truth": "The annual deductible for the Silver HMO plan is $1500.", "answer": "", "contexts": []}
+{"question": "What is the annual deductible for the Bronze HMO plan?", "ground_truth": "The annual deductible for the Bronze HMO plan is $3000.", "answer": "", "contexts": []}
+{"question": "Does the Gold PPO plan cover out-of-network providers?", "ground_truth": "Yes, the Gold PPO plan covers out-of-network providers, though at a higher cost-sharing rate than in-network.", "answer": "", "contexts": []}
+{"question": "Are cosmetic procedures covered under any of the health plans?", "ground_truth": "No, cosmetic procedures are not covered under any of the health plans.", "answer": "", "contexts": []}
+{"question": "Is experimental treatment covered under the Silver HMO plan?", "ground_truth": "No, experimental treatments are not covered under the Silver HMO plan.", "answer": "", "contexts": []}
+{"question": "Are dental and vision services covered under the Bronze HMO plan?", "ground_truth": "Dental and vision services are not covered under the Bronze HMO plan.", "answer": "", "contexts": []}
+{"question": "What is the current status of claim C1001?", "ground_truth": "The current status of claim C1001 is Pending.", "answer": "", "contexts": []}
+{"question": "What is the current status of claim C1002?", "ground_truth": "The current status of claim C1002 is Approved.", "answer": "", "contexts": []}
+{"question": "What is the current status of claim C1003?", "ground_truth": "The current status of claim C1003 is Denied.", "answer": "", "contexts": []}
+{"question": "What is the total amount for claim C1004?", "ground_truth": "The total amount for claim C1004 is $200.", "answer": "", "contexts": []}
+{"question": "How does the Gold PPO deductible compare to the Silver HMO deductible?", "ground_truth": "The Gold PPO deductible is $500, which is lower than the Silver HMO deductible of $1500.", "answer": "", "contexts": []}
+{"question": "Which plan has the lowest annual deductible?", "ground_truth": "The Gold PPO plan has the lowest annual deductible at $500.", "answer": "", "contexts": []}
+{"question": "What is the difference in network type between the Gold PPO and Silver HMO plans?", "ground_truth": "The Gold PPO is a PPO plan allowing out-of-network access, while the Silver HMO restricts members to in-network providers only.", "answer": "", "contexts": []}
+{"question": "How do I submit a claim for reimbursement?", "ground_truth": "To submit a claim, complete the claim form with your member ID, provider details, and service date, then submit it to the claims department by mail, fax, or the member portal.", "answer": "", "contexts": []}
