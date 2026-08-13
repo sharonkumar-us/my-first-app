@@ -1,0 +1,38 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: coverage-chatbot-api/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./chroma_data:/app/chroma_data
+      - ./data:/app/data
+      - ./knowledge_base.jsonl:/app/knowledge_base.jsonl
+      - ./embeddings.npy:/app/embeddings.npy
+    env_file:
+      - .env
+    environment:
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
+      - OLLAMA_API_KEY=${OLLAMA_API_KEY}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - BACKEND_URL=http://backend:8000
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  chroma_data:

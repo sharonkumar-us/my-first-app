@@ -1,0 +1,10 @@
+.venv/
+ft_env/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+chroma_data/
+adapters/
+*.npy
+notebooks/
