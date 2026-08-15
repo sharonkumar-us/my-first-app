@@ -42,6 +42,7 @@ from uuid import uuid4
 
 import tiktoken
 from dotenv import load_dotenv
+from langfuse import Langfuse
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -55,6 +56,13 @@ from redact_pii import redact_pii
 from token_utils import count_tokens
 
 load_dotenv()
+
+# Initialize Langfuse for tracing
+try:
+    langfuse_client = Langfuse()
+except Exception as e:
+    print(f"Warning: Langfuse init failed: {e}")
+    langfuse_client = None
 
 stream_client = OpenAI(
     base_url=os.environ["OLLAMA_BASE_URL"],
