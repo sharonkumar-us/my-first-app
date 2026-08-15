@@ -102,7 +102,12 @@ def sql_lookup(question):
 embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 _CHROMA_PATH = Path(__file__).resolve().parent / "chroma_data"
 chroma_client = chromadb.PersistentClient(path=str(_CHROMA_PATH))
-collection = chroma_client.get_collection("coverage_kb")
+def _get_collection():
+    """Lazy-load the Chroma collection. Create if it doesn't exist."""
+    try:
+        return chroma_client.get_collection("coverage_kb")
+    except Exception:
+        return chroma_client.create_collection("coverage_kb")
 
 
 def vector_lookup(question, n_results=5, plan_type_filter=None):
