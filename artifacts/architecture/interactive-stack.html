@@ -1,0 +1,660 @@
+<title>Coverage Chatbot Architecture</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f3f5f7;
+  --surface:#ffffff;
+  --surface-2:#eceff2;
+  --border:#d7dde3;
+  --text:#121820;
+  --text-dim:#4d5a67;
+  --text-faint:#7c8794;
+
+  --frontend:#0e8fa3;
+  --frontend-bg:#e3f4f6;
+  --backend:#c2680a;
+  --backend-bg:#faeddb;
+  --orchestration:#7133d6;
+  --orchestration-bg:#efe6fc;
+  --data:#0a8f5b;
+  --data-bg:#e0f5eb;
+  --safety:#c81e4c;
+  --safety-bg:#fbe4ea;
+  --infra:#2453c9;
+  --infra-bg:#e3ecfc;
+
+  --shadow: 0 1px 2px rgba(20,30,40,.06), 0 8px 24px -12px rgba(20,30,40,.12);
+}
+
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0a0e13;
+    --surface:#111820;
+    --surface-2:#161f29;
+    --border:#232e3a;
+    --text:#e7edf3;
+    --text-dim:#a8b5c2;
+    --text-faint:#71808f;
+
+    --frontend:#4dd0e6;
+    --frontend-bg:#0f2b30;
+    --backend:#f0a63e;
+    --backend-bg:#2e2210;
+    --orchestration:#b18cf5;
+    --orchestration-bg:#241a38;
+    --data:#3fd694;
+    --data-bg:#0f2b21;
+    --safety:#f2618a;
+    --safety-bg:#301220;
+    --infra:#6d9bf7;
+    --infra-bg:#111f38;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px -16px rgba(0,0,0,.6);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0a0e13;
+  --surface:#111820;
+  --surface-2:#161f29;
+  --border:#232e3a;
+  --text:#e7edf3;
+  --text-dim:#a8b5c2;
+  --text-faint:#71808f;
+
+  --frontend:#4dd0e6;
+  --frontend-bg:#0f2b30;
+  --backend:#f0a63e;
+  --backend-bg:#2e2210;
+  --orchestration:#b18cf5;
+  --orchestration-bg:#241a38;
+  --data:#3fd694;
+  --data-bg:#0f2b21;
+  --safety:#f2618a;
+  --safety-bg:#301220;
+  --infra:#6d9bf7;
+  --infra-bg:#111f38;
+
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px -16px rgba(0,0,0,.6);
+}
+
+*{box-sizing:border-box;}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family:"IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+h1,h2,h3,.display{
+  font-family:"Sora", ui-sans-serif, system-ui, sans-serif;
+  text-wrap:balance;
+}
+code, .mono{
+  font-family:"IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+.wrap{
+  max-width:1180px;
+  margin:0 auto;
+  padding:56px 24px 96px;
+}
+
+/* ---------- Header ---------- */
+.hero{
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+  margin-bottom:44px;
+}
+.eyebrow{
+  font-family:"IBM Plex Mono", monospace;
+  font-size:12.5px;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--text-faint);
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+.eyebrow .dot{
+  width:7px;height:7px;border-radius:50%;
+  background:var(--data);
+  box-shadow:0 0 0 3px var(--data-bg);
+}
+h1{
+  font-size:clamp(30px,4.2vw,44px);
+  font-weight:800;
+  line-height:1.08;
+  margin:0;
+  letter-spacing:-0.02em;
+}
+.sub{
+  font-size:16.5px;
+  color:var(--text-dim);
+  max-width:66ch;
+  line-height:1.55;
+  margin:0;
+}
+.stack-badges{
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:6px;
+}
+.badge{
+  font-family:"IBM Plex Mono", monospace;
+  font-size:12px;
+  padding:4px 10px;
+  border-radius:100px;
+  border:1px solid var(--border);
+  color:var(--text-dim);
+  background:var(--surface);
+}
+
+/* ---------- Legend / controls ---------- */
+.controls{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:16px;
+  flex-wrap:wrap;
+  margin-bottom:28px;
+  padding-bottom:20px;
+  border-bottom:1px solid var(--border);
+}
+.legend{
+  display:flex;
+  flex-wrap:wrap;
+  gap:14px;
+}
+.legend-item{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  font-size:12.5px;
+  color:var(--text-dim);
+}
+.legend-swatch{
+  width:10px;height:10px;border-radius:3px;
+}
+.hint{
+  font-size:12.5px;
+  color:var(--text-faint);
+  font-family:"IBM Plex Mono", monospace;
+}
+
+/* ---------- Pipeline ---------- */
+.pipeline{
+  position:relative;
+  display:flex;
+  flex-direction:column;
+  gap:0;
+}
+.rail{
+  position:absolute;
+  left:15px;
+  top:8px;
+  bottom:8px;
+  width:2px;
+  background:repeating-linear-gradient(to bottom, var(--border) 0 6px, transparent 6px 12px);
+  z-index:0;
+}
+.layer{
+  position:relative;
+  padding-left:48px;
+  margin-bottom:8px;
+}
+.layer-node{
+  position:absolute;
+  left:0;
+  top:2px;
+  width:32px;height:32px;
+  border-radius:50%;
+  display:flex;align-items:center;justify-content:center;
+  font-family:"IBM Plex Mono",monospace;
+  font-weight:500;
+  font-size:13px;
+  border:2px solid var(--surface);
+  z-index:1;
+}
+.layer-head{
+  display:flex;
+  align-items:baseline;
+  gap:10px;
+  flex-wrap:wrap;
+  margin-bottom:14px;
+  padding-top:4px;
+}
+.layer-title{
+  font-size:20px;
+  font-weight:700;
+  margin:0;
+}
+.layer-tag{
+  font-family:"IBM Plex Mono",monospace;
+  font-size:11.5px;
+  padding:2px 8px;
+  border-radius:5px;
+  font-weight:500;
+}
+.layer-desc{
+  font-size:14px;
+  color:var(--text-dim);
+  margin:0 0 16px;
+  max-width:70ch;
+  line-height:1.5;
+}
+.cards{
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(230px,1fr));
+  gap:12px;
+  margin-bottom:36px;
+}
+
+/* ---------- Card ---------- */
+.card{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:14px 16px;
+  cursor:pointer;
+  box-shadow:var(--shadow);
+  transition:transform .15s ease, border-color .15s ease;
+  border-left-width:3px;
+}
+.card:hover{ transform:translateY(-2px); }
+.card:focus-visible{ outline:2px solid var(--text); outline-offset:2px; }
+.card-top{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:8px;
+}
+.card-name{
+  font-size:14.5px;
+  font-weight:600;
+  margin:0;
+}
+.card-role{
+  font-size:12.5px;
+  color:var(--text-faint);
+  margin:3px 0 0;
+}
+.chev{
+  font-size:13px;
+  color:var(--text-faint);
+  transition:transform .18s ease;
+  flex:none;
+  margin-top:1px;
+}
+.card.open .chev{ transform:rotate(180deg); }
+.card-body{
+  display:grid;
+  grid-template-rows:0fr;
+  transition:grid-template-rows .22s ease;
+}
+.card-body-inner{ overflow:hidden; }
+.card.open .card-body{ grid-template-rows:1fr; }
+.card-detail{
+  padding-top:12px;
+  margin-top:12px;
+  border-top:1px dashed var(--border);
+  font-size:13px;
+  color:var(--text-dim);
+  line-height:1.55;
+}
+.card-file{
+  display:inline-block;
+  font-family:"IBM Plex Mono",monospace;
+  font-size:11.5px;
+  color:var(--text-faint);
+  margin-top:8px;
+}
+
+/* ---------- Flow arrow between layers ---------- */
+.flow-arrow{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding-left:48px;
+  margin:-24px 0 24px;
+  font-family:"IBM Plex Mono",monospace;
+  font-size:11.5px;
+  color:var(--text-faint);
+}
+.flow-arrow svg{ flex:none; }
+
+/* ---------- Cross-cutting rail ---------- */
+.crosscutting{
+  margin:12px 0 40px;
+  padding:22px 22px 8px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  background:linear-gradient(180deg, var(--safety-bg), transparent 60%);
+}
+.cc-head{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-bottom:4px;
+}
+.cc-head h2{ font-size:16.5px; margin:0; }
+.cc-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(230px,1fr));
+  gap:12px;
+  margin-top:14px;
+}
+
+/* ---------- Infra footer ---------- */
+.infra-section{
+  margin-top:8px;
+}
+.deploy-grid{
+  display:grid;
+  grid-template-columns: 1.1fr 1.4fr;
+  gap:16px;
+  margin-top:14px;
+}
+@media (max-width:720px){ .deploy-grid{ grid-template-columns:1fr; } }
+.deploy-col{
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:16px 18px;
+  background:var(--surface);
+}
+.deploy-col h3{
+  font-size:13px;
+  text-transform:uppercase;
+  letter-spacing:.06em;
+  color:var(--text-faint);
+  margin:0 0 10px;
+  font-family:"IBM Plex Mono", monospace;
+  font-weight:500;
+}
+.pod-row{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:8px 0;
+  border-bottom:1px solid var(--border);
+  font-size:13.5px;
+}
+.pod-row:last-child{ border-bottom:none; }
+.pod-count{
+  font-family:"IBM Plex Mono",monospace;
+  font-size:11px;
+  padding:2px 7px;
+  border-radius:100px;
+  background:var(--infra-bg);
+  color:var(--infra);
+  font-weight:500;
+}
+.pod-name{ flex:1; font-weight:500; }
+.pod-note{ color:var(--text-faint); font-size:12px; }
+
+footer{
+  margin-top:56px;
+  padding-top:20px;
+  border-top:1px solid var(--border);
+  font-size:12.5px;
+  color:var(--text-faint);
+  font-family:"IBM Plex Mono",monospace;
+  display:flex;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:8px;
+}
+
+@media (prefers-reduced-motion:reduce){
+  .card, .chev, .card-body{ transition:none !important; }
+}
+</style>
+
+<div class="wrap">
+
+  <div class="hero">
+    <div class="eyebrow"><span class="dot"></span>System Architecture &middot; RAG Insurance Assistant</div>
+    <h1>Coverage Chatbot, end to end</h1>
+    <p class="sub">A member asks a plan or claims question in the Streamlit UI. It flows through a FastAPI backend, gets routed to structured SQL lookups, vector retrieval, or both, gets grounded and generated by a local Ollama model, and comes back with citations and structured cards &mdash; while guardrails, PII redaction, and Langfuse tracing watch every hop.</p>
+    <div class="stack-badges">
+      <span class="badge">FastAPI</span>
+      <span class="badge">Streamlit</span>
+      <span class="badge">ChromaDB</span>
+      <span class="badge">SQLite</span>
+      <span class="badge">Ollama · qwen2.5-coder:7b</span>
+      <span class="badge">LangGraph</span>
+      <span class="badge">MCP</span>
+      <span class="badge">Guardrails AI</span>
+      <span class="badge">Langfuse</span>
+      <span class="badge">Docker + Kubernetes</span>
+    </div>
+  </div>
+
+  <div class="controls">
+    <div class="legend" id="legend"></div>
+    <div class="hint">click any card to expand &darr;</div>
+  </div>
+
+  <div class="pipeline">
+    <div class="rail"></div>
+
+    <!-- LAYER 1: FRONTEND -->
+    <section class="layer" data-layer="frontend">
+      <div class="layer-node" style="background:var(--frontend-bg); color:var(--frontend); border-color:var(--surface);">01</div>
+      <div class="layer-head">
+        <h2 class="layer-title">Client</h2>
+        <span class="layer-tag" style="background:var(--frontend-bg); color:var(--frontend);">Streamlit</span>
+      </div>
+      <p class="layer-desc">The member-facing chat surface. Streams tokens as they generate, renders structured claim/plan cards, and keeps a session id alive for the length of the browser tab.</p>
+      <div class="cards"></div>
+    </section>
+
+    <div class="flow-arrow">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v11M2 8l5 5 5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      POST /chat and /chat/stream, JSON over HTTP
+    </div>
+
+    <!-- LAYER 2: BACKEND -->
+    <section class="layer" data-layer="backend">
+      <div class="layer-node" style="background:var(--backend-bg); color:var(--backend); border-color:var(--surface);">02</div>
+      <div class="layer-head">
+        <h2 class="layer-title">API &amp; Orchestration</h2>
+        <span class="layer-tag" style="background:var(--backend-bg); color:var(--backend);">FastAPI</span>
+      </div>
+      <p class="layer-desc">Owns the request lifecycle: rate limiting, cache lookup, memory loading, plan inference, and stitching the retrieval + generation result into a response.</p>
+      <div class="cards"></div>
+    </section>
+
+    <div class="flow-arrow">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v11M2 8l5 5 5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      classify_question() routes to SQL, vector search, or both
+    </div>
+
+    <!-- LAYER 3: ORCHESTRATION / AGENTS -->
+    <section class="layer" data-layer="orchestration">
+      <div class="layer-node" style="background:var(--orchestration-bg); color:var(--orchestration); border-color:var(--surface);">03</div>
+      <div class="layer-head">
+        <h2 class="layer-title">Retrieval &amp; Agents</h2>
+        <span class="layer-tag" style="background:var(--orchestration-bg); color:var(--orchestration);">LangGraph · MCP</span>
+      </div>
+      <p class="layer-desc">The reasoning core. A deterministic router decides structured vs. unstructured vs. both, an optional multi-agent graph delegates to specialists, and tool calls travel over a real MCP server rather than in-process calls.</p>
+      <div class="cards"></div>
+    </section>
+
+    <div class="flow-arrow">
+      <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v11M2 8l5 5 5-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      queries hit vectors, rows, and the model in parallel
+    </div>
+
+    <!-- LAYER 4: DATA & MODEL -->
+    <section class="layer" data-layer="data">
+      <div class="layer-node" style="background:var(--data-bg); color:var(--data); border-color:var(--surface);">04</div>
+      <div class="layer-head">
+        <h2 class="layer-title">Data &amp; Model</h2>
+        <span class="layer-tag" style="background:var(--data-bg); color:var(--data);">ChromaDB · SQLite · Ollama</span>
+      </div>
+      <p class="layer-desc">Where facts live. Policy text as embeddings, plans/claims/conversations as relational rows, and a locally-hosted LLM that never leaves the machine.</p>
+      <div class="cards"></div>
+    </section>
+
+  </div><!-- /pipeline -->
+
+  <!-- CROSS-CUTTING -->
+  <div class="crosscutting">
+    <div class="cc-head">
+      <h2 style="color:var(--safety);">Cross-cutting &mdash; on every hop</h2>
+      <span class="layer-tag" style="background:var(--safety-bg); color:var(--safety);">Safety &amp; Observability</span>
+    </div>
+    <p class="layer-desc">Not a pipeline stage &mdash; these wrap every request, both directions.</p>
+    <div class="cc-grid"></div>
+  </div>
+
+  <!-- INFRA -->
+  <div class="infra-section">
+    <div class="layer-head">
+      <h2 class="layer-title">Deployment</h2>
+      <span class="layer-tag" style="background:var(--infra-bg); color:var(--infra);">Docker &middot; Kubernetes</span>
+    </div>
+    <p class="layer-desc">Local dev runs on docker-compose; the same images deploy to Minikube today with a straight path to EKS/GKE.</p>
+    <div class="deploy-grid">
+      <div class="deploy-col">
+        <h3>docker-compose (dev)</h3>
+        <div class="pod-row"><span class="pod-count">:8000</span><span class="pod-name">backend</span><span class="pod-note">healthcheck-gated</span></div>
+        <div class="pod-row"><span class="pod-count">:8501</span><span class="pod-name">frontend</span><span class="pod-note">waits on backend</span></div>
+        <div class="pod-row"><span class="pod-count">vol</span><span class="pod-name">chroma_data/</span><span class="pod-note">mounted, not baked in</span></div>
+      </div>
+      <div class="deploy-col">
+        <h3>kubernetes (minikube &rarr; EKS/GKE)</h3>
+        <div class="pod-row"><span class="pod-count">&times;2</span><span class="pod-name">backend deployment</span><span class="pod-note">readiness + liveness probes</span></div>
+        <div class="pod-row"><span class="pod-count">&times;1</span><span class="pod-name">frontend deployment</span><span class="pod-note">/_stcore/health probe</span></div>
+        <div class="pod-row"><span class="pod-count">pvc</span><span class="pod-name">chroma-pvc</span><span class="pod-note">persistent vector store</span></div>
+        <div class="pod-row"><span class="pod-count">secret</span><span class="pod-name">ollama-secret</span><span class="pod-note">OLLAMA_API_KEY</span></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    <span>generated from repo scan &middot; my-first-app</span>
+    <span>coverage-chatbot &middot; ABTalks 60-Day AI Challenge</span>
+  </footer>
+
+</div>
+
+<script>
+const DATA = {
+  frontend: {
+    color: "frontend",
+    items: [
+      { name:"Chat UI", role:"Streamlit session + chat_input", file:"app.py",
+        detail:"Renders the chat thread, streams assistant tokens into a placeholder with a typing cursor, and keeps session_id + message history in st.session_state for the tab's lifetime." },
+      { name:"Plan selector", role:"Sidebar context", file:"app.py · load_plans()",
+        detail:"Reads data/plans.csv to populate a plan dropdown. Currently stored in session state but not yet threaded into the backend request." },
+      { name:"Citations & cards", role:"Grounding UI", file:"app.py · render_citations() / render_cards()",
+        detail:"Expands retrieved chunk_ids as a 'Policy sources' panel, and renders claim-status or coverage-summary cards returned by the backend as bordered metric blocks." },
+    ]
+  },
+  backend: {
+    color: "backend",
+    items: [
+      { name:"/chat & /chat/stream", role:"FastAPI endpoints", file:"coverage-chatbot-api/main.py",
+        detail:"POST /chat returns a full JSON answer; /chat/stream does retrieval synchronously then streams generation tokens as Server-Sent Events. Both persist turns to SQLite after generation, never before." },
+      { name:"Session memory", role:"Token-budgeted history", file:"main.py · _load_history()",
+        detail:"Loads full conversation history from SQLite, counts tokens with tiktoken, and summarizes the oldest half via one LLM call once the total exceeds 2000 tokens — plan inference still runs on the raw, unsummarized history." },
+      { name:"Rate limiting", role:"Sliding window", file:"main.py · check_rate_limit()",
+        detail:"Hand-rolled per-member counter, 10 requests / 60s, pruned lazily on each check. No external library — consistent with this project's preference for small deterministic logic over new dependencies." },
+      { name:"Exact-match cache", role:"Cost & latency guard", file:"main.py · is_cacheable()",
+        detail:"Only questions with no claim ID and no member ID are cacheable — anything member-specific always skips the cache to avoid leaking one member's data to another." },
+    ]
+  },
+  orchestration: {
+    color: "orchestration",
+    items: [
+      { name:"Query router", role:"structured / unstructured / both", file:"retrieval_engine.py · classify_question()",
+        detail:"An LLM call classifies each question so plan/claim facts go to SQL and coverage-wording questions go to vector search — hybrid questions do both and merge context." },
+      { name:"Text-to-SQL", role:"Structured lookups", file:"retrieval_engine.py · generate_sql()",
+        detail:"Generates a SELECT against a fixed plans/claims schema described in-prompt, with rules requiring self-labeling columns so results are never a bare unexplained number." },
+      { name:"Multi-agent graph", role:"Router + specialists", file:"multi_agent.py",
+        detail:"LangGraph router dispatches to Coverage/Claims specialist agents. Tool selection is fully deterministic (not left to free-text LLM judgment) after testing showed the model fabricated numbers when trusted to decide on its own." },
+      { name:"MCP tool server", role:"Tool exposure over stdio", file:"mcp_server.py",
+        detail:"Wraps get_claim_status, get_plan_details, and check_coverage as MCP tools so any MCP client — Claude Desktop, or this project's own multi-agent graph — can call them the same way." },
+    ]
+  },
+  data: {
+    color: "data",
+    items: [
+      { name:"Vector store", role:"Policy chunk embeddings", file:"chroma_data/ · ChromaDB",
+        detail:"Policy PDFs/DOCX/PNGs in source_docs/ are extracted to raw_text/, chunked, embedded with sentence-transformers, and persisted here for semantic retrieval." },
+      { name:"Relational store", role:"plans, claims, conversations, token_usage", file:"coverage.db · SQLite",
+        detail:"Same connection pattern used across the backend: plan and claim facts, full conversation history, and per-request token/cost logging all live in one file." },
+      { name:"Local LLM", role:"Generation & classification", file:"Ollama · qwen2.5-coder:7b",
+        detail:"Served locally via an OpenAI-compatible client (OLLAMA_BASE_URL). Used for answer generation, query classification, SQL generation, and history summarization — no cloud LLM fallback yet." },
+    ]
+  }
+};
+
+const CROSSCUTTING = [
+  { name:"Guardrails", role:"Input & output validation", file:"guardrails_config.py",
+    detail:"Custom validators built on guardrails.validator_base — a PromptInjectionDetector screens incoming messages before retrieval, and a MedicalAdviceLeakage check scans outgoing answers for leaked PII or diagnosis-like language." },
+  { name:"PII redaction", role:"Logs & guardrail backstop", file:"redact_pii.py",
+    detail:"Pattern-based redaction of member names and identifiers, reused both in log lines and as part of the output guardrail's PHI check." },
+  { name:"Langfuse tracing", role:"LLM observability", file:"main.py · Langfuse client",
+    detail:"Every /chat and /chat/stream call initializes a Langfuse client so generation calls are traced end to end, with a soft-fail if the client can't init." },
+  { name:"Token & cost logging", role:"Per-request accounting", file:"main.py · _log_token_usage() / token_utils.py",
+    detail:"Counts input/output tokens with a shared tiktoken (cl100k_base) encoding and logs an illustrative cost per request — real inference is local and free, this demonstrates the metering a cloud deployment would need." },
+];
+
+const LEGEND = [
+  { key:"frontend", label:"Client" },
+  { key:"backend", label:"API & Orchestration" },
+  { key:"orchestration", label:"Retrieval & Agents" },
+  { key:"data", label:"Data & Model" },
+  { key:"safety", label:"Cross-cutting" },
+  { key:"infra", label:"Deployment" },
+];
+
+function cardHTML(item, colorVar){
+  return `
+    <div class="card" tabindex="0" role="button" aria-expanded="false" style="border-left-color:var(--${colorVar})">
+      <div class="card-top">
+        <div>
+          <p class="card-name">${item.name}</p>
+          <p class="card-role">${item.role}</p>
+        </div>
+        <span class="chev">&#9662;</span>
+      </div>
+      <div class="card-body"><div class="card-body-inner">
+        <div class="card-detail">
+          ${item.detail}
+          <div class="card-file">${item.file}</div>
+        </div>
+      </div></div>
+    </div>`;
+}
+
+document.querySelectorAll('.layer').forEach(section => {
+  const key = section.dataset.layer;
+  const group = DATA[key];
+  const grid = section.querySelector('.cards');
+  grid.innerHTML = group.items.map(i => cardHTML(i, group.color)).join('');
+});
+
+document.querySelector('.cc-grid').innerHTML = CROSSCUTTING.map(i => cardHTML(i, 'safety')).join('');
+
+document.getElementById('legend').innerHTML = LEGEND.map(l =>
+  `<div class="legend-item"><span class="legend-swatch" style="background:var(--${l.key})"></span>${l.label}</div>`
+).join('');
+
+document.body.addEventListener('click', (e) => {
+  const card = e.target.closest('.card');
+  if(!card) return;
+  const open = card.classList.toggle('open');
+  card.setAttribute('aria-expanded', open ? 'true' : 'false');
+});
+document.body.addEventListener('keydown', (e) => {
+  if((e.key === 'Enter' || e.key === ' ') && e.target.classList.contains('card')){
+    e.preventDefault();
+    e.target.click();
+  }
+});
+</script>
